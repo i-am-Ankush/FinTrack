@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+:root {
+  --accent: #059669;
+  --accent-hover: #047857;
+  --accent-light: #D1FAE5;
+  --accent-dark: #065F46;
+  --accent-mid: #34D399;
+}

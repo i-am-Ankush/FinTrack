@@ -1,0 +1,10 @@
+flask
+flask-jwt-extended
+flask-cors
+pdfplumber
+scikit-learn
+pandas
+reportlab
+gunicorn
+python-dotenv
+werkzeug
