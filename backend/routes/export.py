@@ -1,5 +1,5 @@
 from flask import Blueprint, request, send_file, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask_jwt_extended import jwt_required, get_jwt_identity, verify_jwt_in_request
 from models import get_db
 from datetime import datetime
 import io
@@ -7,8 +7,15 @@ import io
 export_bp = Blueprint('export', __name__)
 
 @export_bp.route('/pdf', methods=['GET'])
-@jwt_required()
 def export_pdf():
+    # Accept JWT from either the Authorization header OR a ?token= query param.
+    # Needed because this route is opened via a plain link/window.open() for
+    # file download, which can't attach a custom Authorization header.
+    try:
+        verify_jwt_in_request(locations=['headers', 'query_string'])
+    except Exception:
+        return jsonify(msg='Missing or invalid token'), 401
+
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
@@ -54,12 +61,11 @@ def export_pdf():
         Spacer(1, 6*mm),
     ]
 
-    # Summary table
     summary_data = [
-        ['Total Spent', f"₹{total:,.2f}"],
-        ['Total Income', f"₹{income:,.2f}"],
-        ['Monthly Budget', f"₹{budget:,.2f}"],
-        ['Remaining', f"₹{budget - total:,.2f}"],
+        ['Total Spent', f"Rs. {total:,.2f}"],
+        ['Total Income', f"Rs. {income:,.2f}"],
+        ['Monthly Budget', f"Rs. {budget:,.2f}"],
+        ['Remaining', f"Rs. {budget - total:,.2f}"],
     ]
     summary_tbl = Table(summary_data, colWidths=[80*mm, 60*mm])
     summary_tbl.setStyle(TableStyle([
@@ -74,12 +80,11 @@ def export_pdf():
     ]))
     story += [summary_tbl, Spacer(1, 6*mm)]
 
-    # Transactions table
     if rows:
         story.append(Paragraph("Transactions", styles['Heading2']))
         story.append(Spacer(1, 3*mm))
 
-        header = [['Date', 'Description', 'Category', 'Amount (₹)']]
+        header = [['Date', 'Description', 'Category', 'Amount (Rs.)']]
         data   = header + [
             [r['date'], r['description'][:40], r['category'],
              f"+{r['amount']:,.2f}" if r['amount'] > 0 else f"{r['amount']:,.2f}"]
