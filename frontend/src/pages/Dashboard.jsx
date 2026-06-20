@@ -16,11 +16,12 @@ function StatCard({ label, value, sub, subColor }) {
 }
 
 export default function Dashboard() {
-  const [month,   setMonth]   = useState(now.getMonth() + 1);
-  const [year,    setYear]    = useState(now.getFullYear());
-  const [budget,  setBudget]  = useState(null);
-  const [summary, setSummary] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [month,     setMonth]     = useState(now.getMonth() + 1);
+  const [year,      setYear]      = useState(now.getFullYear());
+  const [budget,    setBudget]    = useState(null);
+  const [summary,   setSummary]   = useState(null);
+  const [recurring, setRecurring] = useState([]);
+  const [loading,   setLoading]   = useState(true);
 
   useEffect(() => {
     setLoading(true);
@@ -29,18 +30,24 @@ export default function Dashboard() {
       .finally(() => setLoading(false));
   }, [month, year]);
 
+  useEffect(() => {
+    // Recurring expenses are computed across all history, not per-month,
+    // so this only needs to load once.
+    fetch(`${process.env.REACT_APP_API_URL || 'http://localhost:5000'}/analytics/recurring`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+    })
+      .then(r => r.json())
+      .then(d => setRecurring(d.recurring || []))
+      .catch(() => setRecurring([]));
+  }, []);
+
   const months = Array.from({length:12},(_,i)=>({
     value: i+1,
     label: new Date(2000,i).toLocaleString('default',{month:'long'})
   }));
 
-  // Expenses = sum of positive-amount categories (exclude Income)
   const expenseCategories = summary?.by_category?.filter(c => c.category !== 'Income') || [];
   const totalSpent = expenseCategories.reduce((a, c) => a + c.total, 0);
-
-  // Income = from analytics summary (negative amounts stored as positive total by backend)
-  // The /analytics/summary endpoint already filters out Income from by_category
-  // We need to get income from the transactions directly via the summary
   const totalIncome = summary?.total_income || 0;
   const netSavings  = totalIncome - totalSpent;
 
@@ -103,7 +110,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Stat cards — now 5 cards including Income and Net Savings */}
+      {/* Stat cards */}
       <div className="grid grid-cols-5 gap-3 mb-5">
         <StatCard
           label="Total Spent"
@@ -195,6 +202,28 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      {/* Recurring expenses */}
+      {recurring.length > 0 && (
+        <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-xl p-4">
+          <p className="text-[13px] font-medium text-gray-700 dark:text-gray-300 mb-1">Recurring Expenses</p>
+          <p className="text-[11px] text-gray-400 mb-4">Vendors charging you in 3+ different months</p>
+          <div className="grid grid-cols-2 gap-2">
+            {recurring.map(r => (
+              <div key={r.description}
+                className="flex items-center justify-between px-3 py-2 rounded-lg bg-gray-50 dark:bg-gray-800/60">
+                <div>
+                  <p className="text-[13px] text-gray-800 dark:text-gray-200 font-medium">{r.description}</p>
+                  <p className="text-[11px] text-gray-400">{r.months_seen} months · last {r.last_date}</p>
+                </div>
+                <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
+                  ~₹{r.median_amount.toLocaleString('en-IN')}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -2,7 +2,9 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from models import get_db
 from datetime import datetime
+from collections import defaultdict
 import calendar
+import re
 
 analytics_bp = Blueprint('analytics', __name__)
 
@@ -17,7 +19,6 @@ def summary():
 
     conn = get_db()
 
-    # Spending by category — expenses only (positive amounts, exclude Income)
     by_category = conn.execute(
         """SELECT category, ROUND(SUM(amount),2) as total
            FROM transactions
@@ -26,7 +27,6 @@ def summary():
         (user_id, f"{month_str}%")
     ).fetchall()
 
-    # Total income this month (negative amounts = money received)
     income_row = conn.execute(
         """SELECT ROUND(SUM(ABS(amount)),2) as total
            FROM transactions
@@ -35,7 +35,6 @@ def summary():
     ).fetchone()
     total_income = income_row['total'] or 0.0
 
-    # Daily spending trend (expenses only)
     days_in_month = calendar.monthrange(year, month)[1]
     daily_rows = conn.execute(
         """SELECT date, ROUND(SUM(amount),2) as total
@@ -59,3 +58,74 @@ def summary():
         month        = month,
         year         = year
     )
+
+
+def _normalize_desc(desc: str) -> str:
+    """
+    Strip parenthetical remarks and trailing numbers so the same
+    recurring vendor groups together even if the remark text varies
+    slightly month to month, e.g. 'NIT Cali (Library)' and
+    'NIT Cali (Canteen)' both normalize to 'nit cali'.
+    """
+    base = re.sub(r'\(.*?\)', '', desc).strip().lower()
+    base = re.sub(r'\d+', '', base).strip()
+    return base
+
+
+@analytics_bp.route('/recurring', methods=['GET'])
+@jwt_required()
+def recurring():
+    """
+    Flags likely recurring expenses: same normalized description
+    appearing as an expense (amount > 0) in 3 or more distinct months,
+    with a fairly consistent amount (within 25% of the median for
+    that group). Returns one entry per recurring vendor with the
+    median amount, how many months it appeared, and the most recent
+    transaction date.
+    """
+    user_id = get_jwt_identity()
+
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT description, amount, date FROM transactions
+           WHERE user_id=? AND amount > 0 AND category != 'Income'
+           ORDER BY date""",
+        (user_id,)
+    ).fetchall()
+    conn.close()
+
+    groups = defaultdict(list)
+    for r in rows:
+        key = _normalize_desc(r['description'])
+        if not key:
+            continue
+        groups[key].append({'amount': r['amount'], 'date': r['date']})
+
+    recurring_list = []
+    for key, txns in groups.items():
+        months = {t['date'][:7] for t in txns}
+        if len(months) < 3:
+            continue
+
+        amounts = sorted(t['amount'] for t in txns)
+        median = amounts[len(amounts) // 2]
+        if median == 0:
+            continue
+
+        # Keep only amounts within 25% of median to judge consistency
+        consistent = [a for a in amounts if abs(a - median) / median <= 0.25]
+        if len(consistent) < len(amounts) * 0.6:
+            # too inconsistent to call this a real recurring charge
+            continue
+
+        recurring_list.append({
+            'description': key.title(),
+            'median_amount': round(median, 2),
+            'months_seen': len(months),
+            'total_occurrences': len(txns),
+            'last_date': max(t['date'] for t in txns),
+        })
+
+    recurring_list.sort(key=lambda x: -x['months_seen'])
+
+    return jsonify(recurring=recurring_list[:10])

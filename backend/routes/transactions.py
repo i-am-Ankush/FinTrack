@@ -42,10 +42,13 @@ def add_transaction():
     if not all(data.get(k) for k in required):
         return jsonify(msg='amount, description, date are required'), 400
 
-    category = data.get('category', '').strip()
+    category   = data.get('category', '').strip()
+    confidence = None
     if not category or category == 'Other':
-        from ml.classifier import predict_category
-        category = predict_category(data['description'])
+        from ml.classifier import predict_category_with_confidence
+        result     = predict_category_with_confidence(data['description'])
+        category   = result['category']
+        confidence = result['confidence']
 
     conn = get_db()
     cur = conn.execute(
@@ -56,7 +59,11 @@ def add_transaction():
     conn.commit()
     row = conn.execute("SELECT * FROM transactions WHERE id=?", (row_id,)).fetchone()
     conn.close()
-    return jsonify(dict(row)), 201
+
+    result = dict(row)
+    if confidence is not None:
+        result['ml_confidence'] = confidence
+    return jsonify(result), 201
 
 @transactions_bp.route('/<int:tid>', methods=['PUT'])
 @jwt_required()
