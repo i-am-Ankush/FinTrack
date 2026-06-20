@@ -1,5 +1,5 @@
 from flask import Blueprint, request, send_file, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity, verify_jwt_in_request
+from flask_jwt_extended import jwt_required, get_jwt_identity, decode_token
 from models import get_db
 from datetime import datetime
 import io
@@ -8,13 +8,35 @@ export_bp = Blueprint('export', __name__)
 
 @export_bp.route('/pdf', methods=['GET'])
 def export_pdf():
-    # Accept JWT from either the Authorization header OR a ?token= query param.
-    # Needed because this route is opened via a plain link/window.open() for
-    # file download, which can't attach a custom Authorization header.
-    try:
-        verify_jwt_in_request(locations=['headers', 'query_string'])
-    except Exception:
-        return jsonify(msg='Missing or invalid token'), 401
+    """
+    Accepts JWT from either the Authorization header OR a ?token= query
+    param. Needed because this route is opened via a plain link/
+    window.open() for file download, which can't attach a custom
+    Authorization header.
+
+    We decode the token manually here instead of relying on
+    flask_jwt_extended's built-in query_string location, since that
+    location only recognises a param named 'jwt' by default — and
+    renaming the frontend's param risks other side effects.
+    """
+    token = request.args.get('token')
+
+    user_id = None
+    if token:
+        try:
+            decoded = decode_token(token)
+            user_id = decoded['sub']
+        except Exception:
+            pass
+
+    if user_id is None:
+        # Fall back to standard header-based auth
+        from flask_jwt_extended import verify_jwt_in_request
+        try:
+            verify_jwt_in_request()
+            user_id = get_jwt_identity()
+        except Exception:
+            return jsonify(msg='Missing or invalid token'), 401
 
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
@@ -22,7 +44,6 @@ def export_pdf():
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import mm
 
-    user_id = get_jwt_identity()
     now     = datetime.now()
     month   = int(request.args.get('month', now.month))
     year    = int(request.args.get('year',  now.year))
