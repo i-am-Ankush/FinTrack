@@ -1,7 +1,6 @@
 """
-upload.py — SBI Yono parser. TEMPORARY DEBUG LOGGING ADDED to trace
-the description="-" bug. Remove the two `print(..., file=sys.stderr)`
-blocks once the bug is found and fixed.
+upload.py — SBI Yono parser. DEBUG VERSION: traces _clean_desc() input/output
+directly to nail down the description="-" bug at the exact line level.
 """
 
 import os, re, zipfile, io, sys
@@ -143,6 +142,7 @@ def _join_wrapped_lines(raw_lines: list) -> list:
 
 def _parse_lines(lines: list) -> list:
     txns = []
+    debug_count = 0
     for l in _join_wrapped_lines(lines):
         if any(p in l.lower() for p in _SKIP_LINES):
             continue
@@ -166,6 +166,15 @@ def _parse_lines(lines: list) -> list:
             continue
         category = _classify_line(desc, direction)
         display  = _clean_desc(desc)
+
+        # ===== TEMPORARY DEBUG: trace the exact transform =====
+        if debug_count < 8:
+            print(f"DEBUG LINE: raw_line={l!r}", file=sys.stderr)
+            print(f"DEBUG LINE: desc_captured={desc!r}", file=sys.stderr)
+            print(f"DEBUG LINE: display_result={display!r}", file=sys.stderr)
+            debug_count += 1
+        # ===== END DEBUG =====
+
         if credit > 0 and debit == 0:
             txns.append({'date': date_str, 'amount': -credit, 'description': display, 'category': category})
         else:
@@ -216,12 +225,6 @@ def upload_pdf():
     file_bytes = file.read()
     raw_txns = _parse_sbi(file_bytes)
 
-    # ===== TEMPORARY DEBUG LOGGING — remove after bug is found =====
-    print(f"DEBUG UPLOAD: parsed {len(raw_txns)} transactions from {file.filename}", file=sys.stderr)
-    for t in raw_txns[:8]:
-        print(f"DEBUG UPLOAD RAW: {t!r}", file=sys.stderr)
-    # ===== END DEBUG LOGGING =====
-
     if not raw_txns:
         return jsonify(msg='No transactions found. Make sure this is an SBI Yono Relationship Summary PDF.'), 422
 
@@ -245,12 +248,6 @@ def upload_pdf():
             category = predict_category(t['description'])
         to_insert.append((user_id, t['amount'], category, t['description'], t['date'], 'pdf'))
         existing_keys.add(key)
-
-    # ===== TEMPORARY DEBUG LOGGING — remove after bug is found =====
-    print(f"DEBUG UPLOAD: to_insert has {len(to_insert)} rows, first 8:", file=sys.stderr)
-    for row in to_insert[:8]:
-        print(f"DEBUG UPLOAD INSERT: {row!r}", file=sys.stderr)
-    # ===== END DEBUG LOGGING =====
 
     inserted = 0
     if to_insert:
