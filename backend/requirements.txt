@@ -8,3 +8,4 @@ reportlab
 gunicorn
 python-dotenv
 werkzeug
+psycopg2-binary

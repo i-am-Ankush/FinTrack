@@ -42,20 +42,19 @@ def add_transaction():
     if not all(data.get(k) for k in required):
         return jsonify(msg='amount, description, date are required'), 400
 
-    # Auto-classify if category not provided
     category = data.get('category', '').strip()
     if not category or category == 'Other':
         from ml.classifier import predict_category
         category = predict_category(data['description'])
 
     conn = get_db()
-    conn.execute(
-        "INSERT INTO transactions (user_id, amount, category, description, date, source) VALUES (?,?,?,?,?,?)",
+    cur = conn.execute(
+        "INSERT INTO transactions (user_id, amount, category, description, date, source) VALUES (?,?,?,?,?,?) RETURNING id",
         (user_id, float(data['amount']), category, data['description'], data['date'], data.get('source', 'manual'))
     )
+    row_id = cur.fetchone()[0]
     conn.commit()
-    row_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-    row    = conn.execute("SELECT * FROM transactions WHERE id=?", (row_id,)).fetchone()
+    row = conn.execute("SELECT * FROM transactions WHERE id=?", (row_id,)).fetchone()
     conn.close()
     return jsonify(dict(row)), 201
 

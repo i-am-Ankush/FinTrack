@@ -55,7 +55,7 @@ def set_budget():
     conn = get_db()
     conn.execute(
         "INSERT INTO budgets (user_id, month, year, amount) VALUES (?,?,?,?) "
-        "ON CONFLICT(user_id, month, year) DO UPDATE SET amount=excluded.amount",
+        "ON CONFLICT (user_id, month, year) DO UPDATE SET amount=EXCLUDED.amount",
         (user_id, month, year, amount)
     )
     conn.commit()

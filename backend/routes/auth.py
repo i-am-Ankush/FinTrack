@@ -18,12 +18,12 @@ def signup():
 
     conn = get_db()
     try:
-        conn.execute(
-            "INSERT INTO users (email, password_hash) VALUES (?, ?)",
+        cur = conn.execute(
+            "INSERT INTO users (email, password_hash) VALUES (?, ?) RETURNING id",
             (email, generate_password_hash(password))
         )
+        user_id = cur.fetchone()[0]
         conn.commit()
-        user_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         token = create_access_token(identity=str(user_id))
         return jsonify(token=token, email=email), 201
     except Exception:
