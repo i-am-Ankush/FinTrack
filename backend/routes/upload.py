@@ -1,15 +1,10 @@
 """
-upload.py — SBI Yono parser. Uses original _clean_desc logic that worked.
-Keeps: income tracking, PART PERIOD INTEREST skip, ZIP parsing.
-
-PERFORMANCE NOTE: the duplicate-check + insert loop now batches its
-queries instead of running one SELECT + one INSERT per transaction.
-With a remote Postgres (Supabase) instead of local SQLite, each
-round-trip has real network latency — doing ~130 sequential queries
-for a single PDF was exceeding gunicorn's 30s worker timeout.
+upload.py — SBI Yono parser. TEMPORARY DEBUG LOGGING ADDED to trace
+the description="-" bug. Remove the two `print(..., file=sys.stderr)`
+blocks once the bug is found and fixed.
 """
 
-import os, re, zipfile, io
+import os, re, zipfile, io, sys
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
@@ -221,14 +216,17 @@ def upload_pdf():
     file_bytes = file.read()
     raw_txns = _parse_sbi(file_bytes)
 
+    # ===== TEMPORARY DEBUG LOGGING — remove after bug is found =====
+    print(f"DEBUG UPLOAD: parsed {len(raw_txns)} transactions from {file.filename}", file=sys.stderr)
+    for t in raw_txns[:8]:
+        print(f"DEBUG UPLOAD RAW: {t!r}", file=sys.stderr)
+    # ===== END DEBUG LOGGING =====
+
     if not raw_txns:
         return jsonify(msg='No transactions found. Make sure this is an SBI Yono Relationship Summary PDF.'), 422
 
     conn = get_db()
 
-    # --- Batch duplicate check: pull ALL of this user's existing
-    # (date, amount, description) keys in ONE query instead of one
-    # SELECT per transaction. Remote DB round-trips are expensive.
     existing_rows = conn.execute(
         "SELECT date, amount, description FROM transactions WHERE user_id=?",
         (user_id,)
@@ -246,10 +244,14 @@ def upload_pdf():
         if category == 'Other':
             category = predict_category(t['description'])
         to_insert.append((user_id, t['amount'], category, t['description'], t['date'], 'pdf'))
-        existing_keys.add(key)  # guard against dupes within the same file
+        existing_keys.add(key)
 
-    # --- Batch insert: one executemany-style round trip instead of
-    # one INSERT per row.
+    # ===== TEMPORARY DEBUG LOGGING — remove after bug is found =====
+    print(f"DEBUG UPLOAD: to_insert has {len(to_insert)} rows, first 8:", file=sys.stderr)
+    for row in to_insert[:8]:
+        print(f"DEBUG UPLOAD INSERT: {row!r}", file=sys.stderr)
+    # ===== END DEBUG LOGGING =====
+
     inserted = 0
     if to_insert:
         cur = conn._cursor
