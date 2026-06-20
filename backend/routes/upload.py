@@ -1,6 +1,12 @@
 """
 upload.py — SBI Yono parser. Uses original _clean_desc logic that worked.
 Keeps: income tracking, PART PERIOD INTEREST skip, ZIP parsing.
+
+PERFORMANCE NOTE: the duplicate-check + insert loop now batches its
+queries instead of running one SELECT + one INSERT per transaction.
+With a remote Postgres (Supabase) instead of local SQLite, each
+round-trip has real network latency — doing ~130 sequential queries
+for a single PDF was exceeding gunicorn's 30s worker timeout.
 """
 
 import os, re, zipfile, io
@@ -49,7 +55,6 @@ KEYWORD_MAP = {
     'dep tfr': 'Income', 'interest credit': 'Income',
 }
 
-# Rows to skip entirely (loan account, bank charges)
 _SKIP_ROWS = [
     'part period interest', 'advance:loan', 'debit transfer',
     'comm on other', 'mcc issue',
@@ -89,7 +94,6 @@ def _parse_amount(s: str) -> float:
 
 
 def _clean_desc(raw: str) -> str:
-    """Original working _clean_desc — strips only exact known-bad remarks."""
     if 'UPI/' not in raw:
         cleaned = re.sub(r'\s*-\s*$', '', raw.strip())
         cleaned = re.sub(r'^SBIYA\d+[-\s]*', 'Bank Transfer', cleaned)
@@ -99,7 +103,6 @@ def _clean_desc(raw: str) -> str:
     name   = parts[3].strip() if len(parts) > 3 else ''
     remark = parts[6].strip() if len(parts) > 6 else ''
 
-    # Only strip exact known-bad values — don't use prefix matching
     bad_exact = {
         'NO RE', 'NO REM', 'NO REMA', 'NO REMAR', 'NO REMARK',
         'UPI', 'UPI-', 'Paid', 'Sent', 'NA', 'na', 'Pay', 'Payme',
@@ -155,7 +158,6 @@ def _parse_lines(lines: list) -> list:
         desc = desc.strip()
         if not desc or any(p in desc.lower() for p in _SKIP_LINES):
             continue
-        # Skip loan/bank-charge rows
         if any(s in desc.lower() for s in _SKIP_ROWS):
             continue
         credit = _parse_amount(cr_s)
@@ -177,7 +179,6 @@ def _parse_lines(lines: list) -> list:
 
 
 def _parse_sbi(file_bytes: bytes) -> list:
-    # Method 1: ZIP with .txt pages (SBI Yono format)
     try:
         with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
             txt_names = sorted([n for n in zf.namelist() if n.endswith('.txt')])
@@ -191,7 +192,6 @@ def _parse_sbi(file_bytes: bytes) -> list:
                     return txns
     except (zipfile.BadZipFile, Exception):
         pass
-    # Method 2: pdfplumber fallback
     try:
         import pdfplumber
         full_text = ''
@@ -224,28 +224,50 @@ def upload_pdf():
     if not raw_txns:
         return jsonify(msg='No transactions found. Make sure this is an SBI Yono Relationship Summary PDF.'), 422
 
-    inserted = 0
-    skipped  = 0
     conn = get_db()
+
+    # --- Batch duplicate check: pull ALL of this user's existing
+    # (date, amount, description) keys in ONE query instead of one
+    # SELECT per transaction. Remote DB round-trips are expensive.
+    existing_rows = conn.execute(
+        "SELECT date, amount, description FROM transactions WHERE user_id=?",
+        (user_id,)
+    ).fetchall()
+    existing_keys = {(r['date'], round(float(r['amount']), 2), r['description']) for r in existing_rows}
+
+    to_insert = []
+    skipped = 0
     for t in raw_txns:
-        existing = conn.execute(
-            "SELECT id FROM transactions WHERE user_id=? AND date=? AND amount=? AND description=?",
-            (user_id, t['date'], t['amount'], t['description'])
-        ).fetchone()
-        if existing:
+        key = (t['date'], round(float(t['amount']), 2), t['description'])
+        if key in existing_keys:
             skipped += 1
             continue
         category = t['category']
         if category == 'Other':
             category = predict_category(t['description'])
-        conn.execute(
-            "INSERT INTO transactions (user_id, amount, category, description, date, source) VALUES (?,?,?,?,?,?)",
-            (user_id, t['amount'], category, t['description'], t['date'], 'pdf')
+        to_insert.append((user_id, t['amount'], category, t['description'], t['date'], 'pdf'))
+        existing_keys.add(key)  # guard against dupes within the same file
+
+    # --- Batch insert: one executemany-style round trip instead of
+    # one INSERT per row.
+    inserted = 0
+    if to_insert:
+        cur = conn._cursor
+        from psycopg2.extras import execute_values
+        execute_values(
+            cur,
+            "INSERT INTO transactions (user_id, amount, category, description, date, source) VALUES %s",
+            to_insert
         )
-        inserted += 1
+        inserted = len(to_insert)
+
     conn.commit()
     conn.close()
-    return jsonify(msg=f'Imported {inserted} transactions ({skipped} duplicates skipped)', count=inserted, skipped=skipped, bank='SBI'), 201
+
+    return jsonify(
+        msg=f'Imported {inserted} transactions ({skipped} duplicates skipped)',
+        count=inserted, skipped=skipped, bank='SBI'
+    ), 201
 
 
 @upload_bp.route('/train', methods=['POST'])
