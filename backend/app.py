@@ -1,8 +1,8 @@
-from flask import Flask
+from flask import Flask, jsonify
 from flask_jwt_extended import JWTManager
 from flask_cors import CORS
 from config import Config
-from models import init_db
+from models import init_db, get_db
 
 from routes.auth import auth_bp
 from routes.transactions import transactions_bp
@@ -24,6 +24,16 @@ app.register_blueprint(budget_bp,       url_prefix='/budget')
 app.register_blueprint(analytics_bp,    url_prefix='/analytics')
 app.register_blueprint(upload_bp,       url_prefix='/upload')
 app.register_blueprint(export_bp,       url_prefix='/export')
+
+@app.route('/health')
+def health():
+    try:
+        conn = get_db()
+        conn.execute("SELECT 1")
+        conn.close()
+        return jsonify({"status": "ok"}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
